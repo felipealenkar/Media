@@ -1,0 +1,19 @@
+program ProjectMedia;
+
+uses
+  Vcl.Forms, Vcl.Themes, Vcl.Styles,
+  UnitMedia in 'UnitMedia.pas' {FormMedia};
+
+{$R *.res}
+
+begin
+  Application.Initialize;
+  try
+    TStyleManager.TrySetStyle('PersonalizadoAzul');
+    finally
+  end;
+
+  Application.MainFormOnTaskbar := True;
+  Application.CreateForm(TFormMedia, FormMedia);
+  Application.Run;
+end.

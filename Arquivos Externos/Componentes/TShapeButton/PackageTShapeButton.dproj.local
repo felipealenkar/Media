@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<BorlandProject>
+	<Transactions>
+    <Transaction>2025/09/04 23:24:16.000.457,=rtl.dcp</Transaction>
+    <Transaction>2025/09/04 23:24:24.000.926,=C:\Users\WINDOWS_10\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2025/09/04 23:25:12.000.674,C:\Users\WINDOWS_10\Documents\Embarcadero\Studio\Projects\TShapeButton\UnitTShapeButton.pas=C:\Users\WINDOWS_10\Documents\Embarcadero\Studio\Projects\Unit1.pas</Transaction>
+    <Transaction>2025/09/04 23:26:18.000.406,C:\Users\WINDOWS_10\Documents\Embarcadero\Studio\Projects\TShapeButton\PackageTShapeButton.dproj=C:\Users\WINDOWS_10\Documents\Embarcadero\Studio\Projects\Package1.dproj</Transaction>
+    <Transaction>2025/09/04 23:26:41.000.483,=vcl.dcp</Transaction>
+    <Transaction>2025/09/04 23:26:41.000.530,=vclimg.dcp</Transaction>
+  </Transactions>
+</BorlandProject>

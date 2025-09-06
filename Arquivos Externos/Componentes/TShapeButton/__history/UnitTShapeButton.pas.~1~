@@ -1,0 +1,695 @@
+unit UnitTShapeButton;
+
+interface
+
+uses
+  System.SysUtils, System.Classes, Winapi.Windows, Winapi.Messages,
+  Vcl.Controls, Vcl.ExtCtrls, Vcl.Graphics,
+  GDIPAPI, GDIPOBJ, System.Math, Vcl.Imaging.pngimage, Vcl.ImgList, System.UITypes;
+
+type
+  // Enumeração para alinhamento do caption
+  TCaptionAlignment = (caLeft, caRight, caTop, caBottom, caCenter);
+
+  // Enumeração para imagem (apenas alinhamento)
+  TImageAlignment = (iaLeft, iaRight, iaTop, iaBottom, iaCenter);
+
+  TShapePlus = class(TShape)
+  private
+    FOriginalColor: TColor;
+    FHoverColor: TColor;
+    FClickColor: TColor;
+    FIsMouseDown: Boolean;
+    FOnClick: TNotifyEvent;
+    FCaption: string;
+    FCaptionAlignment: TCaptionAlignment;
+    FCaptionFont: TFont;
+    // Campos e propriedades para imagem
+    FImages: TCustomImageList;
+    FImageIndex: TImageIndex;
+    FImageChangeLink: TChangeLink;
+    FImageAlignment: TImageAlignment;
+    FImageMargin: Integer;
+    procedure SetHoverColor(const Value: TColor);
+    procedure SetClickColor(const Value: TColor);
+    procedure SetCaption(const Value: string);
+    procedure SetCaptionAlignment(const Value: TCaptionAlignment);
+    procedure SetCaptionFont(const Value: TFont);
+    procedure CaptionFontChanged(Sender: TObject);
+    procedure SetImages(const Value: TCustomImageList);
+    procedure SetImageIndex(const Value: TImageIndex);
+    procedure SetImageAlignment(const Value: TImageAlignment);
+    procedure SetImageMargin(const Value: Integer);
+    procedure ImageListChange(Sender: TObject);
+    // Função para obter cor com transparência (para estado disabled)
+    function GetDisabledColor(AColor: TColor): TColor;
+    // Método para controlar a cor do brush
+    procedure SetBrushColor(const Value: TColor);
+  protected
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer); override;
+    procedure Click; override;
+    procedure CMMouseEnter(var Message: TMessage); message CM_MOUSEENTER;
+    procedure CMMouseLeave(var Message: TMessage); message CM_MOUSELEAVE;
+    procedure CMEnabledChanged(var Message: TMessage); message CM_ENABLEDCHANGED;
+    procedure Paint; override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    destructor Destroy; override;
+  published
+    property Caption: string read FCaption write SetCaption;
+    property CaptionAlignment: TCaptionAlignment read FCaptionAlignment write SetCaptionAlignment default caCenter;
+    property CaptionFont: TFont read FCaptionFont write SetCaptionFont;
+    property HoverColor: TColor read FHoverColor write SetHoverColor;
+    property ClickColor: TColor read FClickColor write SetClickColor;
+    property OnClick: TNotifyEvent read FOnClick write FOnClick;
+    // Propriedades de imagem
+    property Images: TCustomImageList read FImages write SetImages;
+    property ImageIndex: TImageIndex read FImageIndex write SetImageIndex default -1;
+    property ImageAlignment: TImageAlignment read FImageAlignment write SetImageAlignment default iaCenter;
+    property ImageMargin: Integer read FImageMargin write SetImageMargin default 4;
+    // Override da cor do Brush para manter controle
+    property Color: TColor read FOriginalColor write SetBrushColor;
+  end;
+
+procedure Register;
+
+implementation
+
+var
+  GdiplusToken: ULONG_PTR;
+  GdiplusStartupInput: TGdiplusStartupInput;
+
+// Funções utilitárias para GDI+
+function MakeGDIPlusColor(A: Byte; R: Byte; G: Byte; B: Byte): TGPColor;
+begin
+  Result := (A shl 24) or (R shl 16) or (G shl 8) or B;
+end;
+
+function MakeRectF(X, Y, W, H: Single): TGPRectF;
+begin
+  Result.X := X;
+  Result.Y := Y;
+  Result.Width := W;
+  Result.Height := H;
+end;
+
+procedure AddRoundedRect(path: TGPGraphicsPath; rect: TGPRectF; radius: single);
+begin
+  path.AddArc(rect.X, rect.Y, radius * 2, radius * 2, 180, 90);
+  path.AddArc(rect.X + rect.Width - radius * 2, rect.Y, radius * 2, radius * 2, 270, 90);
+  path.AddArc(rect.X + rect.Width - radius * 2, rect.Y + rect.Height - radius * 2, radius * 2, radius * 2, 0, 90);
+  path.AddArc(rect.X, rect.Y + rect.Height - radius * 2, radius * 2, radius * 2, 90, 90);
+  path.CloseFigure;
+end;
+
+function ColorToGDIPlusColor(AColor: TColor): TGPColor;
+var
+  RGB: Longint;
+begin
+  RGB := ColorToRGB(AColor);
+  Result := MakeGDIPlusColor(255, GetRValue(RGB), GetGValue(RGB), GetBValue(RGB));
+end;
+
+// Função para criar cor GDI+ com transparência
+function ColorToGDIPlusColorWithAlpha(AColor: TColor; Alpha: Byte): TGPColor;
+var
+  RGB: Longint;
+begin
+  RGB := ColorToRGB(AColor);
+  Result := MakeGDIPlusColor(Alpha, GetRValue(RGB), GetGValue(RGB), GetBValue(RGB));
+end;
+
+procedure Register;
+begin
+  RegisterComponents('MinhaPaleta', [TShapePlus]);
+end;
+
+{ TShapePlus }
+
+constructor TShapePlus.Create(AOwner: TComponent);
+begin
+  inherited;
+  FOriginalColor := Brush.Color;
+  FHoverColor := clRed;
+  FClickColor := clNavy;
+  FIsMouseDown := False;
+  FCaption := '';
+  FCaptionAlignment := caCenter;
+  FImageIndex := -1;
+  FImageAlignment := iaCenter;
+  FImageMargin := 4;
+
+  // Fonte do caption
+  FCaptionFont := TFont.Create;
+  FCaptionFont.OnChange := CaptionFontChanged;
+  FCaptionFont.Name := 'Segoe UI';
+  FCaptionFont.Size := 9;
+  FCaptionFont.Color := clBlack;
+  FCaptionFont.Style := [];
+
+  // ChangeLink de imagens
+  FImageChangeLink := TChangeLink.Create;
+  FImageChangeLink.OnChange := ImageListChange;
+end;
+
+destructor TShapePlus.Destroy;
+begin
+  if Assigned(FImages) then
+    FImages.UnregisterChanges(FImageChangeLink);
+  FCaptionFont.Free;
+  FImageChangeLink.Free;
+  inherited Destroy;
+end;
+
+function TShapePlus.GetDisabledColor(AColor: TColor): TColor;
+var
+  R, G, B: Byte;
+  RGBValue: Longint;
+begin
+  // Converte a cor para tons mais apagados quando desabilitado
+  RGBValue := ColorToRGB(AColor);
+  R := GetRValue(RGBValue);
+  G := GetGValue(RGBValue);
+  B := GetBValue(RGBValue);
+
+  // Reduz a saturação e aumenta o brilho para dar aspecto "desabilitado"
+  R := R + ((255 - R) div 2);
+  G := G + ((255 - G) div 2);
+  B := B + ((255 - B) div 2);
+
+  Result := TColor((R shl 16) or (G shl 8) or B);
+end;
+
+procedure TShapePlus.CaptionFontChanged(Sender: TObject);
+begin
+  Invalidate;
+end;
+
+procedure TShapePlus.ImageListChange(Sender: TObject);
+begin
+  Invalidate;
+end;
+
+procedure TShapePlus.SetImages(const Value: TCustomImageList);
+begin
+  if FImages = Value then
+    Exit;
+
+  if Assigned(FImages) then
+    FImages.UnregisterChanges(FImageChangeLink);
+
+  FImages := Value;
+
+  if Assigned(FImages) then
+    FImages.RegisterChanges(FImageChangeLink);
+
+  Invalidate;
+end;
+
+procedure TShapePlus.SetImageIndex(const Value: TImageIndex);
+begin
+  if FImageIndex <> Value then
+  begin
+    FImageIndex := Value;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.SetImageAlignment(const Value: TImageAlignment);
+begin
+  if FImageAlignment <> Value then
+  begin
+    FImageAlignment := Value;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.SetImageMargin(const Value: Integer);
+begin
+  if FImageMargin <> Value then
+  begin
+    FImageMargin := Value;
+    Invalidate;
+  end;
+end;
+
+// Implementação do método SetBrushColor
+procedure TShapePlus.SetBrushColor(const Value: TColor);
+begin
+  if FOriginalColor <> Value then
+  begin
+    FOriginalColor := Value;
+    // Só atualiza o Brush.Color se o componente estiver habilitado
+    // ou se não estivermos em um estado de interação (hover/click)
+    if Enabled and not FIsMouseDown and (Brush.Color <> FHoverColor) then
+      Brush.Color := Value;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.CMEnabledChanged(var Message: TMessage);
+begin
+  inherited;
+  // Quando o estado enabled muda, restaura a cor original
+  if Enabled then
+  begin
+    // Ao habilitar, restaura a cor original
+    Brush.Color := FOriginalColor;
+  end
+  else
+  begin
+    // Ao desabilitar, não muda o Brush.Color aqui
+    // O efeito visual será aplicado no Paint
+  end;
+  Invalidate;
+end;
+
+procedure TShapePlus.CMMouseEnter(var Message: TMessage);
+begin
+  inherited;
+  // Só responde ao mouse se estiver habilitado
+  if not Enabled then Exit;
+
+  if not FIsMouseDown then
+  begin
+    Brush.Color := FHoverColor;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.CMMouseLeave(var Message: TMessage);
+begin
+  inherited;
+  // Só responde ao mouse se estiver habilitado
+  if not Enabled then Exit;
+
+  if not FIsMouseDown then
+  begin
+    Brush.Color := FOriginalColor;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  inherited;
+  // Só responde ao mouse se estiver habilitado
+  if not Enabled then Exit;
+
+  FIsMouseDown := True;
+  Brush.Color := FClickColor;
+  Invalidate;
+end;
+
+procedure TShapePlus.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+begin
+  inherited;
+  // Só responde ao mouse se estiver habilitado
+  if not Enabled then Exit;
+
+  FIsMouseDown := False;
+  if PtInRect(ClientRect, Point(X, Y)) then
+  begin
+    if Assigned(FOnClick) then
+      FOnClick(Self);
+    Brush.Color := FHoverColor;
+  end
+  else
+  begin
+    Brush.Color := FOriginalColor;
+  end;
+  Invalidate;
+end;
+
+procedure TShapePlus.Click;
+begin
+  // Só executa o click se estiver habilitado
+  if not Enabled then Exit;
+  // Evita o comportamento padrão do TShape
+end;
+
+procedure TShapePlus.Paint;
+var
+  G: TGPGraphics;
+  P: TGPPen;
+  B: TGPSolidBrush;
+  Path: TGPGraphicsPath;
+  R: TGPRectF;
+  W: Single;
+  SquareSize: Single;
+
+  // Texto
+  FontFamily: TGPFontFamily;
+  GPFont: TGPFont;
+  TextBrush: TGPSolidBrush;
+  TextRect: TGPRectF;
+  StringFormat: TGPStringFormat;
+  MeasuredBox: TGPRectF;
+  TextX, TextY: Single;
+
+  // Variáveis para imagem
+  HasImage: Boolean;
+  ImageRect: TRect;
+  ImageWidth, ImageHeight: Integer;
+  ImageX, ImageY: Integer;
+  AvailableTextArea: TGPRectF;
+  FontStyle: Integer;
+  DCState: Integer;
+
+  // Cores para uso (normais ou desabilitadas)
+  BrushColorToUse, PenColorToUse, FontColorToUse: TColor;
+
+  // Função interna para calcular posição da imagem
+  procedure CalculateImagePosition;
+  begin
+    // Sempre usa tamanho original
+    ImageWidth := FImages.Width;
+    ImageHeight := FImages.Height;
+
+    case FImageAlignment of
+      iaLeft:
+        begin
+          ImageX := FImageMargin;
+          ImageY := (Height - ImageHeight) div 2;
+        end;
+      iaRight:
+        begin
+          ImageX := Width - ImageWidth - FImageMargin;
+          ImageY := (Height - ImageHeight) div 2;
+        end;
+      iaTop:
+        begin
+          ImageX := (Width - ImageWidth) div 2;
+          ImageY := FImageMargin;
+        end;
+      iaBottom:
+        begin
+          ImageX := (Width - ImageWidth) div 2;
+          ImageY := Height - ImageHeight - FImageMargin;
+        end;
+      iaCenter:
+        begin
+          ImageX := (Width - ImageWidth) div 2;
+          ImageY := (Height - ImageHeight) div 2;
+        end;
+    end;
+  end;
+
+begin
+  TextX := 0;
+  TextY := 0;
+  Canvas.Lock;
+  try
+    // Verifica se há imagem válida - SEMPRE mostra a imagem se configurada
+    HasImage := Assigned(FImages) and (FImageIndex >= 0) and (FImageIndex < FImages.Count);
+
+    // Define as cores a serem usadas baseado no estado Enabled
+    if Enabled then
+    begin
+      // Quando habilitado, usa as cores normais
+      BrushColorToUse := Brush.Color;
+      PenColorToUse := Pen.Color;
+      FontColorToUse := FCaptionFont.Color;
+    end
+    else
+    begin
+      // Quando desabilitado, usa a cor original (não a do Brush atual) com efeito disabled
+      BrushColorToUse := GetDisabledColor(FOriginalColor);
+      PenColorToUse := GetDisabledColor(Pen.Color);
+      FontColorToUse := GetDisabledColor(FCaptionFont.Color);
+    end;
+
+    // Calcula dimensões e posição da imagem se existir
+    if HasImage then
+    begin
+      CalculateImagePosition;
+      ImageRect := Rect(ImageX, ImageY, ImageX + ImageWidth, ImageY + ImageHeight);
+    end
+    else
+    begin
+      ImageX := 0;
+      ImageY := 0;
+      ImageWidth := 0;
+      ImageHeight := 0;
+    end;
+
+    // Salva o estado do DC
+    DCState := SaveDC(Canvas.Handle);
+    try
+      // ====== BLOCO GDI+ (formas + texto) ======
+      G := TGPGraphics.Create(Canvas.Handle);
+      try
+        // Qualidade
+        G.SetSmoothingMode(SmoothingModeAntiAlias);
+        G.SetPixelOffsetMode(PixelOffsetModeHalf);
+
+        W := Pen.Width;
+        R := MakeRectF(0.5, 0.5, Width - 1.0, Height - 1.0);
+
+        // Cria brush e pen com as cores apropriadas (normal ou disabled)
+        if Enabled then
+        begin
+          B := TGPSolidBrush.Create(ColorToGDIPlusColor(BrushColorToUse));
+          P := TGPPen.Create(ColorToGDIPlusColor(PenColorToUse), W);
+        end
+        else
+        begin
+          // Para disabled, usa as cores calculadas com efeito disabled
+          B := TGPSolidBrush.Create(ColorToGDIPlusColor(BrushColorToUse));
+          P := TGPPen.Create(ColorToGDIPlusColor(PenColorToUse), W);
+        end;
+
+        try
+          P.SetAlignment(PenAlignmentInset);
+
+          // --- Desenha a forma ---
+          case Shape of
+            stRectangle:
+              begin
+                G.FillRectangle(B, R);
+                G.DrawRectangle(P, R);
+              end;
+
+            stSquare:
+              begin
+                SquareSize := Min(R.Width, R.Height);
+                R.X := R.X + (R.Width - SquareSize) / 2;
+                R.Y := R.Y + (R.Height - SquareSize) / 2;
+                R.Width := SquareSize;
+                R.Height := SquareSize;
+
+                G.FillRectangle(B, R);
+                G.DrawRectangle(P, R);
+              end;
+
+            stRoundRect:
+              begin
+                Path := TGPGraphicsPath.Create;
+                try
+                  AddRoundedRect(Path, R, 20);
+                  G.FillPath(B, Path);
+                  G.DrawPath(P, Path);
+                finally
+                  Path.Free;
+                end;
+              end;
+
+            stRoundSquare:
+              begin
+                SquareSize := Min(R.Width, R.Height);
+                R.X := R.X + (R.Width - SquareSize) / 2;
+                R.Y := R.Y + (R.Height - SquareSize) / 2;
+                R.Width := SquareSize;
+                R.Height := SquareSize;
+
+                Path := TGPGraphicsPath.Create;
+                try
+                  AddRoundedRect(Path, R, Min(20, SquareSize / 4));
+                  G.FillPath(B, Path);
+                  G.DrawPath(P, Path);
+                finally
+                  Path.Free;
+                end;
+              end;
+
+            stEllipse, stCircle:
+              begin
+                G.FillEllipse(B, R);
+                G.DrawEllipse(P, R);
+              end;
+          end;
+
+          // --- TEXTO (com inteligência para evitar sobreposição) ---
+          if FCaption <> '' then
+          begin
+            FontFamily := TGPFontFamily.Create(FCaptionFont.Name);
+            try
+              // Estilo da fonte
+              FontStyle := FontStyleRegular;
+              if fsBold in FCaptionFont.Style then
+                FontStyle := FontStyle or FontStyleBold;
+              if fsItalic in FCaptionFont.Style then
+                FontStyle := FontStyle or FontStyleItalic;
+              if fsUnderline in FCaptionFont.Style then
+                FontStyle := FontStyle or FontStyleUnderline;
+              if fsStrikeOut in FCaptionFont.Style then
+                FontStyle := FontStyle or FontStyleStrikeout;
+
+              GPFont := TGPFont.Create(FontFamily, FCaptionFont.Size, FontStyle, UnitPoint);
+              try
+                // Brush do texto com cor apropriada (normal ou disabled)
+                TextBrush := TGPSolidBrush.Create(ColorToGDIPlusColor(FontColorToUse));
+
+                StringFormat := TGPStringFormat.Create;
+                try
+                  // Calcula área disponível para texto baseado na presença e posição da imagem
+                  if HasImage then
+                  begin
+                    case FImageAlignment of
+                      iaLeft:
+                        AvailableTextArea := MakeRectF(ImageRect.Right + 4, 0, Width - ImageRect.Right - 4, Height);
+                      iaRight:
+                        AvailableTextArea := MakeRectF(0, 0, ImageRect.Left - 4, Height);
+                      iaTop:
+                        AvailableTextArea := MakeRectF(0, ImageRect.Bottom + 4, Width, Height - ImageRect.Bottom - 4);
+                      iaBottom:
+                        AvailableTextArea := MakeRectF(0, 0, Width, ImageRect.Top - 4);
+                      iaCenter:
+                        AvailableTextArea := MakeRectF(0, ImageRect.Bottom + 4, Width, Height - ImageRect.Bottom - 4);
+                    end;
+                  end
+                  else
+                  begin
+                    AvailableTextArea := MakeRectF(0, 0, Width, Height);
+                  end;
+
+                  // Mede o texto na área disponível
+                  G.MeasureString(PWideChar(FCaption), -1, GPFont, AvailableTextArea, StringFormat, MeasuredBox);
+
+                  // Posiciona o texto baseado no seu alinhamento e na área disponível
+                  case FCaptionAlignment of
+                    caLeft:
+                      begin
+                        TextX := AvailableTextArea.X + 5;
+                        TextY := AvailableTextArea.Y + (AvailableTextArea.Height - MeasuredBox.Height) / 2;
+                      end;
+                    caRight:
+                      begin
+                        TextX := AvailableTextArea.X + AvailableTextArea.Width - MeasuredBox.Width - 5;
+                        TextY := AvailableTextArea.Y + (AvailableTextArea.Height - MeasuredBox.Height) / 2;
+                      end;
+                    caTop:
+                      begin
+                        TextX := AvailableTextArea.X + (AvailableTextArea.Width - MeasuredBox.Width) / 2;
+                        TextY := AvailableTextArea.Y + 5;
+                      end;
+                    caBottom:
+                      begin
+                        TextX := AvailableTextArea.X + (AvailableTextArea.Width - MeasuredBox.Width) / 2;
+                        TextY := AvailableTextArea.Y + AvailableTextArea.Height - MeasuredBox.Height - 5;
+                      end;
+                    caCenter:
+                      begin
+                        TextX := AvailableTextArea.X + (AvailableTextArea.Width - MeasuredBox.Width) / 2;
+                        TextY := AvailableTextArea.Y + (AvailableTextArea.Height - MeasuredBox.Height) / 2;
+                      end;
+                  end;
+
+                  // Garante que o texto não saia dos limites do componente
+                  if TextX < 2 then TextX := 2;
+                  if TextY < 2 then TextY := 2;
+                  if TextX + MeasuredBox.Width > Width - 2 then
+                    TextX := Width - MeasuredBox.Width - 2;
+                  if TextY + MeasuredBox.Height > Height - 2 then
+                    TextY := Height - MeasuredBox.Height - 2;
+
+                  TextRect := MakeRectF(TextX, TextY, MeasuredBox.Width, MeasuredBox.Height);
+
+                  StringFormat.SetAlignment(StringAlignmentNear);
+                  StringFormat.SetLineAlignment(StringAlignmentNear);
+
+                  G.DrawString(PWideChar(FCaption), -1, GPFont, TextRect, StringFormat, TextBrush);
+
+                finally
+                  StringFormat.Free;
+                  TextBrush.Free;
+                end;
+              finally
+                GPFont.Free;
+              end;
+            finally
+              FontFamily.Free;
+            end;
+          end;
+
+        finally
+          B.Free;
+          P.Free;
+        end;
+
+        G.Flush;
+      finally
+        G.Free;
+      end;
+
+    finally
+      RestoreDC(Canvas.Handle, DCState);
+    end;
+
+    // ====== DESENHA IMAGEM (sempre tamanho original e sempre visível se configurada) ======
+    if HasImage then
+    begin
+      if Enabled then
+        FImages.Draw(Canvas, ImageX, ImageY, FImageIndex, True)
+      else
+        // Mesmo desabilitado, desenha a imagem com efeito disabled mas mantém visível
+        FImages.Draw(Canvas, ImageX, ImageY, FImageIndex, False);
+    end;
+
+  finally
+    Canvas.Unlock;
+  end;
+end;
+
+procedure TShapePlus.SetHoverColor(const Value: TColor);
+begin
+  FHoverColor := Value;
+end;
+
+procedure TShapePlus.SetClickColor(const Value: TColor);
+begin
+  FClickColor := Value;
+end;
+
+procedure TShapePlus.SetCaption(const Value: string);
+begin
+  if FCaption <> Value then
+  begin
+    FCaption := Value;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.SetCaptionAlignment(const Value: TCaptionAlignment);
+begin
+  if FCaptionAlignment <> Value then
+  begin
+    FCaptionAlignment := Value;
+    Invalidate;
+  end;
+end;
+
+procedure TShapePlus.SetCaptionFont(const Value: TFont);
+begin
+  FCaptionFont.Assign(Value);
+end;
+
+initialization
+  GdiplusStartupInput.GdiplusVersion := 1;
+  GdiplusStartup(GdiplusToken, @GdiplusStartupInput, nil);
+
+finalization
+  GdiplusShutdown(GdiplusToken);
+
+end.
